@@ -19,14 +19,14 @@ The database user that is used to run the tool, has to have SELECT permissions o
 
 ## Usage <a name="usage"></a>
 
-  Usage: OracleSchemaDumper [options]
-    Options:
-      -d, --data-tables   Names of the tables for which data shall be exported, too
-      -f, --file          The file to write the DDL SQL to; stdout if not specified
-    * -j, --jdbc-url      Database jdbc url
-    * -p, --password      Database password
-      -s, --schema        Database schemas to export; if not specified uses the schema for the database user
-    * -u, --username      Database username
+    Usage: OracleSchemaDumper [options]
+      Options:
+        -d, --data-tables   Names of the tables for which data shall be exported, too
+        -f, --file          The file to write the DDL SQL to; stdout if not specified
+      * -j, --jdbc-url      Database jdbc url
+      * -p, --password      Database password
+        -s, --schema        Database schemas to export; if not specified uses the schema for the database user
+      * -u, --username      Database username
 
 ## Known limitations <a name="limitations"></a>
 
