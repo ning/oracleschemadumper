@@ -16,6 +16,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.jgrapht.alg.CycleDetector;
 import org.jgrapht.graph.DefaultDirectedGraph;
@@ -34,8 +35,41 @@ import com.beust.jcommander.ParameterException;
 
 public class OracleSchemaDumper
 {
+    /**
+     * Possible values include:
+     *   CONSUMER GROUP
+     *   EDITION
+     *   EVALUATION CONTEXT
+     *   FUNCTION
+     *   INDEX
+     *   INDEX PARTITION
+     *   INDEXTYPE
+     *   JAVA CLASS
+     *   JAVA RESOURCE
+     *   JOB CLASS
+     *   LIBRARY
+     *   LOB
+     *   LOB PARTITION
+     *   OPERATOR
+     *   PACKAGE
+     *   PACKAGE BODY
+     *   PROCEDURE
+     *   PROGRAM
+     *   SCHEDULE
+     *   SEQUENCE
+     *   SYNONYM
+     *   TABLE
+     *   TABLE PARTITION
+     *   TRIGGER
+     *   TYPE
+     *   VIEW
+     *   WINDOW
+     *   WINDOW GROUP
+     *   XML SCHEMA
+     */
     private static final List<String> NON_TABLE_TYPES = Arrays.asList("VIEW", "INDEX", "SEQUENCE", "PROCEDURE", "FUNCTION");
     private static final SimpleDateFormat ORACLE_DATE_FORMAT = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
+    private static final String TABLESPACE_REGEX = "TABLESPACE \"[^\"]*\"";
 
     @Parameter(names = { "-j", "--jdbc-url" }, description = "Database jdbc url", required = true)
     private String jdbcUrl;
@@ -49,6 +83,14 @@ public class OracleSchemaDumper
     private String outputFile;
     @Parameter(names = { "-d", "--data-tables" }, description = "Names of the tables for which data shall be exported, too")
     private List<String> dataTables;
+    @Parameter(names = { "--include-create-user" }, description = "Whether to include CREATE USER SQL for the user(s), off by default")
+    private boolean includeCreateUser = false;
+    @Parameter(names = { "--include-grants" }, description = "Whether to include GRANT SQL for the user(s), off by default")
+    private boolean includeGrants = false;
+    @Parameter(names = { "--include-dollar-tables" }, description = "Whether to include CREATE TABLE SQL for the tables with $ in their names, off by default")
+    private boolean includeDollarTables = false;
+    @Parameter(names = { "--include-tablespaces" }, description = "Whether to include DDL for tablespaces and create the tables in them, off by default")
+    private boolean includeTablespaces = false;
 
     private String schemaSelector;
 
@@ -128,38 +170,69 @@ public class OracleSchemaDumper
 
     private void dumpUsers(final Handle handle, final PrintWriter output)
     {
-        String ddl = handle.createQuery("SELECT trim(dbms_metadata.get_ddl('USER', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
-                           .map(StringMapper.FIRST).first();
-        if (ddl != null) {
-            output.println(ddl + "\n");
+        String ddl;
+
+        if (includeCreateUser) {
+            ddl = handle.createQuery("SELECT trim(dbms_metadata.get_ddl('USER', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
+                        .map(StringMapper.FIRST).first();
+            if (ddl != null) {
+                output.println(ddl + "\n");
+            }
         }
-        ddl = handle.createQuery("SELECT trim(dbms_metadata.get_granted_ddl('ROLE_GRANT', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
-                    .map(StringMapper.FIRST).first();
-        if (ddl != null) {
-            output.println(ddl + "\n");
-        }
-        ddl = handle.createQuery("SELECT trim(dbms_metadata.get_granted_ddl('SYSTEM_GRANT', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
-                    .map(StringMapper.FIRST).first();
-        if (ddl != null) {
-            output.println(ddl + "\n");
-        }
-        ddl = handle.createQuery("SELECT trim(dbms_metadata.get_granted_ddl('OBJECT_GRANT', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
-                    .map(StringMapper.FIRST).first();
-        if (ddl != null) {
-            output.println(ddl + "\n");
+        if (includeGrants) {
+            ddl = handle.createQuery("SELECT trim(dbms_metadata.get_granted_ddl('ROLE_GRANT', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
+                        .map(StringMapper.FIRST).first();
+            if (ddl != null) {
+                output.println(ddl + "\n");
+            }
+            ddl = handle.createQuery("SELECT trim(dbms_metadata.get_granted_ddl('SYSTEM_GRANT', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
+                        .map(StringMapper.FIRST).first();
+            if (ddl != null) {
+                output.println(ddl + "\n");
+            }
+            ddl = handle.createQuery("SELECT trim(dbms_metadata.get_granted_ddl('OBJECT_GRANT', username)) || '/' FROM all_users WHERE username IN (" + schemaSelector + ")")
+                        .map(StringMapper.FIRST).first();
+            if (ddl != null) {
+                output.println(ddl + "\n");
+            }
         }
     }
 
     private void dumpTables(Handle handle, final PrintWriter output)
     {
+        if (includeTablespaces) {
+            // TODO:
+            // * determine all used table spaces (from all_objects with owner ?)
+            // * select dbms_metadata.get_ddl('TABLESPACE', tablespace_name) FROM dba_tablespaces WHERE tablespace_name IN (...);
+        }
+
+        DefaultDirectedGraph<String, DefaultEdge> dag = new DefaultDirectedGraph<String, DefaultEdge>(DefaultEdge.class);
+        Set<String> tables = new HashSet<String>();
+        Map<String, String> constraintsForTables = new HashMap<String, String>();
+
+        ResultIterator<Map<String, Object>> tableIt = handle.createQuery("SELECT object_name name FROM all_objects " +
+                                                                         "  WHERE owner IN (" + schemaSelector + ") " +
+                                                                         "    AND object_type = 'TABLE' AND temporary = 'N' ORDER BY object_type DESC")
+                                                            .setFetchSize(1000)
+                                                            .iterator();
+        while (tableIt.hasNext()) {
+            Map<String, Object> table = tableIt.next();
+            String tableName = table.get("name").toString();
+
+            if (!tables.contains(tableName)) {
+                if (includeDollarTables || tableName.indexOf('$') < 0) {
+                    dag.addVertex(tableName);
+                    tables.add(tableName);
+                }
+            }
+        }
+        tableIt.close();
+
         ResultIterator<Map<String, Object>> constraintIt = handle.createQuery("SELECT table_name, constraint_name FROM all_constraints " +
                                                                               "  WHERE owner IN (" + schemaSelector + ") " +
                                                                               "    AND constraint_type IN ('P', 'U', 'R')")
                                                                  .setFetchSize(1000)
                                                                  .iterator();
-        DefaultDirectedGraph<String, DefaultEdge> dag = new DefaultDirectedGraph<String, DefaultEdge>(DefaultEdge.class);
-        Set<String> tables = new HashSet<String>();
-        Map<String, String> constraintsForTables = new HashMap<String, String>();
 
         while (constraintIt.hasNext()) {
             Map<String, Object> constraint = constraintIt.next();
@@ -167,6 +240,7 @@ public class OracleSchemaDumper
             String constraintName = constraint.get("constraint_name").toString();
 
             if (!tables.contains(tableName)) {
+                System.out.println("Found table " + tableName);
                 dag.addVertex(tableName);
                 tables.add(tableName);
             }
@@ -214,7 +288,7 @@ public class OracleSchemaDumper
             TopologicalOrderIterator<String, DefaultEdge> orderIterator = new TopologicalOrderIterator<String, DefaultEdge>(dag);
 
             while (orderIterator.hasNext()) {
-                dumpDdlForObject(handle, orderIterator.next(), output);
+                dumpDdlForObject(handle, orderIterator.next(), "TABLE", output);
             }
         }
     }
@@ -223,7 +297,7 @@ public class OracleSchemaDumper
     {
         ResultIterator<Map<String, Object>> resultIt = handle.createQuery("SELECT object_type type, object_name name FROM all_objects " +
                                                                           "  WHERE owner IN (" + schemaSelector + ") " +
-                                                                          "    AND object_type IN (" + joinForSql(types) + ") " +
+                                                                          "    AND object_type IN (" + joinForSql(types) + ") AND temporary = 'N' " +
                                                                           "  ORDER BY object_type DESC")
                                                              .setFetchSize(1000)
                                                              .iterator();
@@ -236,19 +310,24 @@ public class OracleSchemaDumper
             String ddl = handle.createQuery("SELECT trim(dbms_metadata.get_ddl('" + type + "','" + name + "')) || '/' FROM DUAL")
                                .map(StringMapper.FIRST).first();
             if (ddl != null) {
+                if (!includeTablespaces) {
+                    // remove tablespace part
+                    ddl = ddl.replaceAll(TABLESPACE_REGEX, "");
+                }
                 output.println(ddl + "\n");
             }
         }
         resultIt.close();
     }
     
-    private void dumpDdlForObject(final Handle handle, final String objectName, final PrintWriter output)
+    private void dumpDdlForObject(final Handle handle, final String objectName, final String objectType, final PrintWriter output)
     {
         Map<String, Object> result = handle.createQuery("SELECT object_type type, object_name name FROM all_objects " +
                                                         "  WHERE owner IN (" + schemaSelector + ") " +
-                                                        "    AND object_name = :object_name" +
+                                                        "    AND object_name = :object_name AND object_type = :object_type" +
                                                         "  ORDER BY object_type DESC")
                                            .bind("object_name", objectName.toUpperCase())
+                                           .bind("object_type", objectType.toUpperCase())
                                            .first();
 
         if (result != null) {
@@ -258,6 +337,10 @@ public class OracleSchemaDumper
             String ddl = handle.createQuery("SELECT trim(dbms_metadata.get_ddl('" + type + "','" + name + "')) || '/' FROM DUAL")
                                .map(StringMapper.FIRST).first();
             if (ddl != null) {
+                if (!includeTablespaces) {
+                    // remove tablespace part
+                    ddl = ddl.replaceAll(TABLESPACE_REGEX, "");
+                }
                 output.println(ddl + "\n");
             }
         }
